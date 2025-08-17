@@ -25,7 +25,7 @@ if not cap.isOpened():
     print("Error: Could not open webcam.")
     exit()
 
-# Variables for tracking distraction
+# Tracking distraction
 distraction_threshold = 5  # seconds without focus to consider distracted
 last_focus_time = time.time()
 distracted = False
@@ -81,7 +81,7 @@ def detect_objects(frame):
                 boxes.append((x, y, w, h, classes[class_id]))
     return distraction_detected, boxes
 
-print("Starting Enhanced Lock-In Homework Detector. Press 'q' to quit.")
+print("Starting Lock-In Homework Detector. Press 'q' to quit.")
 
 while True:
     ret, frame = cap.read()
@@ -102,7 +102,7 @@ while True:
             else:
                 distraction_reason = "Looking away from screen"
 
-            # --- Draw bounding box around face and eyes ---
+            # Box box
             h, w = frame.shape[:2]
             x_coords = [lm.x * w for lm in face_landmarks.landmark]
             y_coords = [lm.y * h for lm in face_landmarks.landmark]
@@ -121,7 +121,7 @@ while True:
             cv2.rectangle(frame, (left_eye[0]-20, left_eye[1]-20), (left_eye[0]+10, left_eye[1]+10), color, 2)
             cv2.rectangle(frame, (right_eye[0]-20, right_eye[1]-20), (right_eye[0]+10, right_eye[1]+10), color, 2)
 
-    # --- Object distraction detection ---
+    # Object distraction detection
     distraction_obj, object_boxes = detect_objects(frame)
     if distraction_obj:
         focused = False
@@ -131,7 +131,7 @@ while True:
             cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 0, 255), 2)
             cv2.putText(frame, label, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
-    # --- Focus scoring ---
+    # Focus scoring 
     if focused:
         last_focus_time = time.time()
         focus_score = min(100, focus_score + score_recovery_rate)
@@ -145,12 +145,12 @@ while True:
                 distracted = True
         focus_score = max(0, focus_score - score_decay_rate)
 
-    # --- Status text ---
+    # Status text
     status_text = f"{'Locked in' if focused else f'Distracted: {distraction_reason}'} | Score: {int(focus_score)}"
     cv2.putText(frame, status_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1,
                 (0, 255, 0) if focused else (0, 0, 255), 2)
 
-    cv2.imshow('Enhanced Lock-In Homework Detector', frame)
+    cv2.imshow('Lock-In Homework Detector', frame)
 
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
