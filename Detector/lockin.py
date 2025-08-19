@@ -31,7 +31,7 @@ if not cap.isOpened():
     cap = cv2.VideoCapture(0)
 
 
-# Variables for tracking distraction
+# Tracking distraction
 distraction_threshold = 5  # seconds without focus to consider distracted
 focus_score = 100
 last_focus_time = time.time()
@@ -125,7 +125,7 @@ while True:
             left_eye_box = get_eye_box(face_landmarks.landmark, LEFT_EYE, frame.shape)
             right_eye_box = get_eye_box(face_landmarks.landmark, RIGHT_EYE, frame.shape)
 
-            # raw bounding box around face and eyes
+            # draw bounding box around face and eyes
             h, w = frame.shape[:2]
             x_coords = [lm.x * w for lm in face_landmarks.landmark]
             y_coords = [lm.y * h for lm in face_landmarks.landmark]
@@ -156,7 +156,6 @@ while True:
             print(f"Back to focus! Score: {int(focus_score)}")
             distracted = False
     else:
-        # Start decreasing score immediately when distracted
         time_distracted = current_time - last_focus_time
         if time_distracted > 1:  # faster detection
             focus_score = max(0, focus_score - 2.0)  # decrease faster
