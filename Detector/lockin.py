@@ -3,10 +3,16 @@ import mediapipe as mp
 import numpy as np
 import time
 
+# initialize MediaPipe
 mp_face_mesh = mp.solutions.face_mesh
-face_mesh = mp_face_mesh.FaceMesh(min_detection_confidence=0.5, min_tracking_confidence=0.5)
+face_mesh = mp_face_mesh.FaceMesh(
+    max_num_faces=1,
+    refine_landmarks=True,
+    min_detection_confidence=0.6,
+    min_tracking_confidence=0.6
+)
 
-# Initialize YOLO for object detection
+# initialize YOLO
 yolo_loaded = False
 try:
     net = cv2.dnn.readNet("yolov3.weights", "yolov3.cfg")
@@ -17,92 +23,109 @@ try:
     yolo_loaded = True
     print("YOLO model loaded successfully.")
 except Exception as e:
-    print(f"Warning: Failed to load YOLO model. Object detection disabled. Error: {e}")
+    print(f"YOLO not loaded: {e}")
 
-cap = cv2.VideoCapture(1)  # change to 0 if external cam is not detected
-
+# camera setup    
+cap = cv2.VideoCapture(1)
 if not cap.isOpened():
-    print("Error: Could not open webcam.")
-    exit()
+    cap = cv2.VideoCapture(0)
+
 
 # Variables for tracking distraction
 distraction_threshold = 5  # seconds without focus to consider distracted
+focus_score = 100
 last_focus_time = time.time()
 distracted = False
-focus_score = 100
-score_decay_rate = 0.5
-score_recovery_rate = 1
 
-def calculate_angle(p1, p2, p3):
-    v1 = np.array(p1) - np.array(p2)
-    v2 = np.array(p3) - np.array(p2)
-    cosine_angle = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
-    angle = np.arccos(np.clip(cosine_angle, -1.0, 1.0))
-    return np.degrees(angle)
+# Eye landmarks
+LEFT_EYE = [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246]
+RIGHT_EYE = [362, 382, 381, 380, 374, 373, 390, 249, 263, 466, 388, 387, 386, 385, 384, 398]
 
-def is_gaze_on_screen(landmarks, frame_shape):
+def get_eye_box(landmarks, eye_indices, frame_shape):
     h, w = frame_shape[:2]
-    left_eye_inner = landmarks[133]  
-    right_eye_inner = landmarks[362]  
-    nose = landmarks[1]  
+    eye_points = [(int(landmarks[i].x * w), int(landmarks[i].y * h)) for i in eye_indices]
+    
+    x_coords = [p[0] for p in eye_points]
+    y_coords = [p[1] for p in eye_points]
+    
+    x_min, x_max = min(x_coords), max(x_coords)
+    y_min, y_max = min(y_coords), max(y_coords)
+    
+    # Add padding
+    padding = 5
+    return (x_min - padding, y_min - padding, 
+            x_max - x_min + 2*padding, y_max - y_min + 2*padding)
 
-    left_eye_pos = (int(left_eye_inner.x * w), int(left_eye_inner.y * h))
-    right_eye_pos = (int(right_eye_inner.x * w), int(right_eye_inner.y * h))
-    nose_pos = (int(nose.x * w), int(nose.y * h))
+def is_looking_at_screen(landmarks, frame_shape):
+    h, w = frame_shape[:2]
+    
+    # Key points for head pose
+    nose_tip = landmarks[1]
+    left_eye = landmarks[33]
+    right_eye = landmarks[263]
+    chin = landmarks[175]
+    
+    # Convert to pixel coordinates
+    nose = (int(nose_tip.x * w), int(nose_tip.y * h))
+    left_eye_pos = (int(left_eye.x * w), int(left_eye.y * h))
+    right_eye_pos = (int(right_eye.x * w), int(right_eye.y * h))
+    chin_pos = (int(chin.x * w), int(chin.y * h))
+    
+    # Calculate head orientation
+    eye_center_x = (left_eye_pos[0] + right_eye_pos[0]) / 2
+    eye_center_y = (left_eye_pos[1] + right_eye_pos[1]) / 2
+    
+    # Horizontal turn (yaw) - nose position relative to eye center
+    face_width = abs(right_eye_pos[0] - left_eye_pos[0])
+    nose_offset = abs(nose[0] - eye_center_x)
+    horizontal_ratio = nose_offset / face_width if face_width > 0 else 0
+    
+    # Vertical tilt (pitch) - eye-nose vs nose-chin distance
+    eye_nose_dist = abs(nose[1] - eye_center_y)
+    nose_chin_dist = abs(chin_pos[1] - nose[1])
+    vertical_ratio = eye_nose_dist / nose_chin_dist if nose_chin_dist > 0 else 0
+    
+    # Check if looking at screen (adjusted thresholds)
+    looking_horizontally = horizontal_ratio < 0.25  # less strict
+    looking_vertically = 0.3 < vertical_ratio < 0.8  # normal range
+    
+    reason = ""
+    if not looking_horizontally:
+        reason = "Head turned away"
+    elif not looking_vertically:
+        reason = "Head tilted away"
+    
+    return looking_horizontally and looking_vertically, reason
 
-    head_angle = calculate_angle(left_eye_pos, nose_pos, right_eye_pos)
-    return head_angle < 45  # allow up to 45° head tilt
 
-def detect_objects(frame):
-    if not yolo_loaded:
-        return False, []
-
-    height, width = frame.shape[:2]
-    blob = cv2.dnn.blobFromImage(frame, 0.00392, (416, 416), (0, 0, 0), True, crop=False)
-    net.setInput(blob)
-    outs = net.forward(output_layers)
-
-    boxes = []
-    distraction_detected = False
-
-    for out in outs:
-        for detection in out:
-            scores = detection[5:]
-            class_id = np.argmax(scores)
-            confidence = scores[class_id]
-            if confidence > 0.5 and classes[class_id] in ["cell phone", "book", "cup"]:
-                distraction_detected = True
-                center_x = int(detection[0] * width)
-                center_y = int(detection[1] * height)
-                w = int(detection[2] * width)
-                h = int(detection[3] * height)
-                x = int(center_x - w / 2)
-                y = int(center_y - h / 2)
-                boxes.append((x, y, w, h, classes[class_id]))
-    return distraction_detected, boxes
-
-print("Starting Enhanced Lock-In Homework Detector. Press 'q' to quit.")
+print("Starting Lock-In Homework Detector. Press 'q' to quit.")
 
 while True:
     ret, frame = cap.read()
     if not ret:
-        print("Error: Failed to capture frame.")
         break
 
     frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     results = face_mesh.process(frame_rgb)
 
-    focused = False
+    focused = True
     distraction_reason = ""
 
+    # face detection and gaze analysis
     if results.multi_face_landmarks:
         for face_landmarks in results.multi_face_landmarks:
-            if is_gaze_on_screen(face_landmarks.landmark, frame.shape):
-                focused = True
-            else:
-                distraction_reason = "Looking away from screen"
+            # Check if looking at screen
+            looking_at_screen, gaze_reason = is_looking_at_screen(face_landmarks.landmark, frame.shape)
+            
+            if not looking_at_screen:
+                focused = False
+                distraction_reason = gaze_reason
 
-            # --- Draw bounding box around face and eyes ---
+            # Draw eye boxes
+            left_eye_box = get_eye_box(face_landmarks.landmark, LEFT_EYE, frame.shape)
+            right_eye_box = get_eye_box(face_landmarks.landmark, RIGHT_EYE, frame.shape)
+
+            # raw bounding box around face and eyes
             h, w = frame.shape[:2]
             x_coords = [lm.x * w for lm in face_landmarks.landmark]
             y_coords = [lm.y * h for lm in face_landmarks.landmark]
@@ -115,42 +138,38 @@ while True:
             # Face box
             cv2.rectangle(frame, (min_x, min_y), (max_x, max_y), color, 2)
 
-            # Eyes
-            left_eye = (int(face_landmarks.landmark[153].x * w), int(face_landmarks.landmark[133].y * h))
-            right_eye = (int(face_landmarks.landmark[262].x * w), int(face_landmarks.landmark[362].y * h))
-            cv2.rectangle(frame, (left_eye[0]-20, left_eye[1]-20), (left_eye[0]+10, left_eye[1]+10), color, 2)
-            cv2.rectangle(frame, (right_eye[0]-20, right_eye[1]-20), (right_eye[0]+10, right_eye[1]+10), color, 2)
-
-    # --- Object distraction detection ---
-    distraction_obj, object_boxes = detect_objects(frame)
-    if distraction_obj:
+           # Draw eye rectangles
+            cv2.rectangle(frame, (left_eye_box[0], left_eye_box[1]), 
+                         (left_eye_box[0] + left_eye_box[2], left_eye_box[1] + left_eye_box[3]), color, 2)
+            cv2.rectangle(frame, (right_eye_box[0], right_eye_box[1]), 
+                         (right_eye_box[0] + right_eye_box[2], right_eye_box[1] + right_eye_box[3]), color, 2)
+    else:
         focused = False
-        distraction_reason = "Holding distracting object"
-        # Draw red boxes for objects
-        for (x, y, w, h, label) in object_boxes:
-            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 0, 255), 2)
-            cv2.putText(frame, label, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        distraction_reason = "No face detected"
 
-    # --- Focus scoring ---
+    # Focus scoring
+    current_time = time.time()
     if focused:
-        last_focus_time = time.time()
-        focus_score = min(100, focus_score + score_recovery_rate)
+        last_focus_time = current_time
+        focus_score = min(100, focus_score + 1.5)  # recover faster
         if distracted:
-            print(f"Locked in! Focus score: {int(focus_score)}")
+            print(f"Back to focus! Score: {int(focus_score)}")
             distracted = False
     else:
-        if time.time() - last_focus_time > distraction_threshold:
+        # Start decreasing score immediately when distracted
+        time_distracted = current_time - last_focus_time
+        if time_distracted > 1:  # faster detection
+            focus_score = max(0, focus_score - 2.0)  # decrease faster
             if not distracted:
-                print(f"Student distracted! Reason: {distraction_reason}. Score: {int(focus_score)}")
+                print(f"DISTRACTED: {distraction_reason}")
                 distracted = True
-        focus_score = max(0, focus_score - score_decay_rate)
 
-    # --- Status text ---
+    # Status text
     status_text = f"{'Locked in' if focused else f'Distracted: {distraction_reason}'} | Score: {int(focus_score)}"
     cv2.putText(frame, status_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1,
                 (0, 255, 0) if focused else (0, 0, 255), 2)
 
-    cv2.imshow('Enhanced Lock-In Homework Detector', frame)
+    cv2.imshow('Lock-In Homework Detector', frame)
 
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
