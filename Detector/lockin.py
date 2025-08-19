@@ -51,7 +51,7 @@ def get_eye_box(landmarks, eye_indices, frame_shape):
     x_min, x_max = min(x_coords), max(x_coords)
     y_min, y_max = min(y_coords), max(y_coords)
     
-    # Add padding
+    
     padding = 5
     return (x_min - padding, y_min - padding, 
             x_max - x_min + 2*padding, y_max - y_min + 2*padding)
@@ -87,16 +87,15 @@ def is_looking_at_screen(landmarks, frame_shape):
     
     # Check if looking at screen (adjusted thresholds)
     looking_horizontally = horizontal_ratio < 0.25  # less strict
-    looking_vertically = 0.3 < vertical_ratio < 0.8  # normal range
+    looking_vertically = 0.2 < vertical_ratio < 1.0  # wider range for proximity
     
     reason = ""
     if not looking_horizontally:
         reason = "Head turned away"
     elif not looking_vertically:
-        reason = "Head tilted away"
+        reason = "Head tilted too far"
     
     return looking_horizontally and looking_vertically, reason
-
 
 print("Starting Lock-In Homework Detector. Press 'q' to quit.")
 
